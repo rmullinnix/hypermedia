@@ -27,7 +27,6 @@
 package hypermedia
 
 import (
-	"fmt"
 	"strings"
 	"reflect"
 	"regexp"
@@ -99,8 +98,6 @@ func sirenDecorator(prefix string, response interface{}) (interface{}) {
 		case reflect.Slice, reflect.Array, reflect.Map:
 			props := make(map[string]interface{})
 			hm_resp.Entities, hm_resp.Class = getEntityList(v, entities)
-			fmt.Println("Class: ", hm_resp.Class)
-			fmt.Println("entitie list: ", entities)
 			hm_resp.Actions = sirenActions(entities[hm_resp.Class], props)
 			hm_resp.Links = sirenLinks(entities[hm_resp.Class], props)
 		default:

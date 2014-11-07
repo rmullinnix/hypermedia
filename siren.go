@@ -27,6 +27,7 @@
 package hypermedia
 
 import (
+	"fmt"
 	"strings"
 	"reflect"
 	"regexp"
@@ -96,7 +97,12 @@ func sirenDecorator(prefix string, response interface{}) (interface{}) {
 			hm_resp.Actions = sirenActions(entities[hm_resp.Class], props)
 			hm_resp.Links = sirenLinks(entities[hm_resp.Class], props)
 		case reflect.Slice, reflect.Array, reflect.Map:
+			props := make(map[string]interface{})
 			hm_resp.Entities, hm_resp.Class = getEntityList(v, entities)
+			fmt.Println("Class: ", hm_resp.Class)
+			fmt.Println("entitie list: ", entities)
+			hm_resp.Actions = sirenActions(entities[hm_resp.Class], props)
+			hm_resp.Links = sirenLinks(entities[hm_resp.Class], props)
 		default:
 			hm_resp.Properties = response
 			hm_resp.Class = reflect.TypeOf(response).Name()
@@ -177,7 +183,7 @@ func getEntityList(val reflect.Value, entities map[string]entity) ([]SirenEntity
 		entList = append(entList, item)
 
 		if i == 0 {
-			className = vItem.Type().Name() + " list"
+			className = "[]" + vItem.Type().Name()
 		}
 	}
 

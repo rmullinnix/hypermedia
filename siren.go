@@ -260,8 +260,10 @@ func getValueString(item interface{}) string {
 			value = strconv.FormatUint(vItem.Uint(), 10)
 		case reflect.Float32:
 			value = strconv.FormatFloat(vItem.Float(), 'e', -1, 32)
-		case reflect.String:
+		case reflect.Float64:
 			value = strconv.FormatFloat(vItem.Float(), 'e', -1, 64)
+		case reflect.String:
+			value = vItem.String()
 	}
 	return value
 }

@@ -83,23 +83,28 @@ type Curie bool			// hal
 
 var entityInitialized	bool
 var entities 		map[string]entity
+var srvr_prefix		string
+var access		map[string]string
+var security_enabled	bool
 
 //Signiture of functions to be used as Decorators
 type Decorator struct {
-	Decorate func(string, interface{}) (interface{})
+	Decorate func(string, interface{}, string) (interface{})
 }
 
 func NewHypermediaDecorator() {
+	access = make(map[string]string)
+	security_enabled = false
 	registerHypermedia("application/vnd.siren+json", newSirenDecorator())
 	registerHypermedia("application/hal+json", newHalDecorator())
 }
 
-func Decorate(mime string, prefix string, response interface{}) (interface{}) {
+func Decorate(mime string, prefix string, response interface{}, role string) (interface{}) {
 	dec := getHypermedia(mime)
 	if dec == nil {
 		return response
 	} else {
-		return dec.Decorate(prefix, response)
+		return dec.Decorate(prefix, response, role)
 	}
 }
 
@@ -270,4 +275,33 @@ func prepCurieData(name string, tags reflect.StructTag) curie {
 	}
 
 	return *cur
+}
+
+func EnableSecurity() {
+	security_enabled = true
+}
+
+func AddAccessRights(resource string, role string, rights string) {
+	access[resource + role] = rights
+}
+
+func canAccessResource(resource string, role string, method string) bool {
+	if !security_enabled {
+		return true
+	}
+
+	chk := "other"
+	switch method {
+		case "GET": chk = "read"
+		case "POST": chk = "create"
+		case "PUT": chk = "update"
+		case "DELETE": chk = "delete"
+	}
+
+	roleAccess, found := access[resource + role]
+	if found {
+		return strings.Contains(roleAccess, chk)
+	}
+
+	return false
 }

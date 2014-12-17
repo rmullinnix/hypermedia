@@ -55,53 +55,70 @@ type HalLink struct {
 // to the message prior to marshaling the data and returning it to the client
 // The HalDecorator loosely follows the HAL specification
 // mime type: applcation/hal+json 
-func halDecorator(prefix string, response interface{}) (interface{}) {
+func halDecorator(prefix string, response interface{}, role string) (interface{}) {
 	var hm_resp 	HalDocument
 
+	srvr_prefix = prefix
+
 	hm_resp = make(map[string]interface{}, 0)
-	links := make(map[string]interface{}, 1)
 	v := reflect.ValueOf(response)
 	switch v.Kind() {
 		case reflect.Struct:
 			// Properties - not sub-entity items
 			// Any sub-entities (struct or array), placed in Embedded
 			class := reflect.TypeOf(response).Name()
-			key := "" //v.FieldByName(entities[class].key)
 
-			halResourceLinks(links, entities[class], key, false)
-			halDocumentCuries(links, entities[class])
+			props, ents := stripEmbedded(v, entities)
+
+			links := halResourceLinks(entities[class], props, false)
+			curies := halDocumentCuries(entities[class])
+
+			for c_key, c_itm := range curies {
+				links[c_key] = c_itm
+			}
 
 			hm_resp["_links"] = links
-
-			stripEmbedded(hm_resp, v, entities)
-			//hm_resp = append(hm_resp, properties)
-			//hm_resp = append(hm_resp, embedded)
+			for p_key, p_itm := range props {
+				hm_resp[p_key] = p_itm
+			}
+			hm_resp["_embedded"] = ents
 		case reflect.Slice, reflect.Array, reflect.Map:
-			//hm_resp.Embedded.Resources, _ = getEmbeddedList(v, entities)
+			props := make(map[string]interface{})
+			resources, class := getEmbeddedList(v, entities)
+			links := halResourceLinks(entities[class], props, false)
+			curies := halDocumentCuries(entities[class])
+
+			for c_key, c_itm := range curies {
+				links[c_key] = c_itm
+			}
+
+			hm_resp["_links"] = links
+			hm_resp["_embedded"] = resources
 		default:
-			//hm_resp.Properties = response
-			//hm_resp.Class = reflect.TypeOf(response).Name()
+			hm_resp[reflect.TypeOf(response).Name()] = response
 	}
 
 	return hm_resp
 }
 
-func halResourceLinks(lnklist map[string]interface{}, ent entity, keyval string, sub bool) {
-	
+func halResourceLinks(ent entity, props map[string]interface{}, sub bool) (map[string]interface{}) {
+	lnklist := make(map[string]interface{})
+
 	for _, e_lnk := range ent.links {
 		if sub && strings.IndexFunc(e_lnk.rel[:1], unicode.IsUpper) == 0 {
 			continue
 		}
 
 		lnk := HalLink{e_lnk.href, e_lnk.templated, e_lnk.typ, "", e_lnk.name, "", e_lnk.title, ""}
-		if strings.Contains(lnk.Href, "{key}") {
-			lnk.Href = strings.Replace(lnk.Href, "{key}", keyval, 1)
-		}
+		lnk.Href = updatePath(lnk.Href, props)
 		lnklist[e_lnk.rel] = lnk
 	}
+	return lnklist
 }
 
-func halDocumentCuries(lnklist map[string]interface{}, ent entity) {
+func halDocumentCuries(ent entity) (map[string]interface{}) {
+	lnklist := make(map[string]interface{})
+
 	var curlist	[]HalCurie
 
 	curlist = make([]HalCurie, len(ent.curies))
@@ -114,10 +131,12 @@ func halDocumentCuries(lnklist map[string]interface{}, ent entity) {
 	if i > 0 {
 		lnklist["curies"] = curlist
 	}
+	return lnklist
 }
 
-func stripEmbedded(resp map[string]interface{}, in reflect.Value, entities map[string]entity) {
-	emb := make(map[string]interface{}, 0)
+func stripEmbedded(in reflect.Value, entities map[string]entity) (map[string]interface{}, map[string]interface{}) {
+	emb := make(map[string]interface{})
+	props := make(map[string]interface{})
 
 	typ := reflect.TypeOf(in.Interface())
 	for i := 0; i < typ.NumField(); i++ {
@@ -126,52 +145,59 @@ func stripEmbedded(resp map[string]interface{}, in reflect.Value, entities map[s
 			case reflect.Slice, reflect.Array, reflect.Map:
 				item := vItem.Index(0)
 				if _, ok := entities[item.Type().Name()]; ok {
-					resources := getEmbeddedList(vItem, entities)
+					resources, _ := getEmbeddedList(vItem, entities)
 					emb[item.Type().Name()] = resources
 				} else {
-					resp[typ.Field(i).Name] = vItem.Interface()
+					props[typ.Field(i).Name] = vItem.Interface()
 				}
 			default:
 				if _, ok := entities[typ.Field(i).Name]; ok {
-					resource := getResource(false, vItem, entities)
+					resource := getEmbedded(false, vItem, entities)
 					emb[typ.Field(i).Name] = resource
 				} else {
-					resp[typ.Field(i).Name] = vItem.Interface()
+					props[typ.Field(i).Name] = vItem.Interface()
 				}
 		}
 	}
-	resp["_embedded"] = emb
+	return props, emb
 }
 
-func getEmbeddedList(val reflect.Value, entities map[string]entity) []interface{} {
+func getEmbeddedList(val reflect.Value, entities map[string]entity) ([]interface{}, string) {
+	var className		string
+
 	embList := make([]interface{}, 0)
 
 	for i := 0; i < val.Len(); i++ {
 		vItem := val.Index(i)
 
-		item := getResource(true, vItem, entities)
+		item := getEmbedded(true, vItem, entities)
 
 		embList = append(embList, item)
+
+		if i == 0 {
+			className = "[]" + vItem.Type().Name()
+		}
 	}
 
-	return embList
+	return embList, className
 }
 
-func getResource(embedded bool, in reflect.Value, entities map[string]entity) map[string]interface{} {
+func getEmbedded(embedded bool, in reflect.Value, entities map[string]entity) map[string]interface{} {
 	resp := make(map[string]interface{}, 0)
-	links := make(map[string]interface{}, 0)
+        typ := reflect.TypeOf(in.Interface())
 	if subent, ok := entities[in.Type().Name()]; ok {
-		// class := reflect.TypeOf(in).Name()
-		halResourceLinks(links, subent, "", embedded)
-	}
-	if len(links) > 0 {
-		resp["_links"] = links
-	}
+                val := reflect.ValueOf(in.Interface())
+                for i := 0; i < typ.NumField(); i++ {
+                        valf := val.Field(i)
+                        resp[typ.Field(i).Name] = valf.Interface()
+                }
 
-	typ := reflect.TypeOf(in.Interface())
-	for i := 0; i < typ.NumField(); i++ {
-		vItem := in.Field(i)
-		resp[typ.Field(i).Name] = vItem.Interface()
+		// class := reflect.TypeOf(in).Name()
+		links := halResourceLinks(subent, resp, embedded)
+
+		if len(links) > 0 {
+			resp["_links"] = links
+		}
 	}
 
 	return resp

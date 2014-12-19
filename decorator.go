@@ -175,6 +175,10 @@ func RegisterEntity(i_ent interface{}) {
 	}
 }
 
+func UnregisterEntity(classname string) {
+	delete(entities, classname)
+}
+
 func prepEntityData(tags reflect.StructTag) entity {
 	ent := new(entity)
 

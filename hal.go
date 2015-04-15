@@ -55,10 +55,10 @@ type HalLink struct {
 // to the message prior to marshaling the data and returning it to the client
 // The HalDecorator loosely follows the HAL specification
 // mime type: applcation/hal+json 
-func halDecorator(prefix string, response interface{}, role string) (interface{}) {
+func halDecorator(response interface{}, dec *Decorator) (interface{}) {
 	var hm_resp 	HalDocument
 
-	srvr_prefix = prefix
+	myDec = dec
 
 	hm_resp = make(map[string]interface{}, 0)
 	v := reflect.ValueOf(response)
@@ -68,10 +68,10 @@ func halDecorator(prefix string, response interface{}, role string) (interface{}
 			// Any sub-entities (struct or array), placed in Embedded
 			class := reflect.TypeOf(response).Name()
 
-			props, ents := stripEmbedded(v, entities)
+			props, ents := stripEmbedded(v)
 
-			links := halResourceLinks(entities[class], props, false)
-			curies := halDocumentCuries(entities[class])
+			links := halResourceLinks(myDec.GetEntity(class), props, false)
+			curies := halDocumentCuries(myDec.GetEntity(class))
 
 			for c_key, c_itm := range curies {
 				links[c_key] = c_itm
@@ -84,9 +84,9 @@ func halDecorator(prefix string, response interface{}, role string) (interface{}
 			hm_resp["_embedded"] = ents
 		case reflect.Slice, reflect.Array, reflect.Map:
 			props := make(map[string]interface{})
-			resources, class := getEmbeddedList(v, entities)
-			links := halResourceLinks(entities[class], props, false)
-			curies := halDocumentCuries(entities[class])
+			resources, class := getEmbeddedList(v)
+			links := halResourceLinks(myDec.GetEntity(class), props, false)
+			curies := halDocumentCuries(myDec.GetEntity(class))
 
 			for c_key, c_itm := range curies {
 				links[c_key] = c_itm
@@ -101,7 +101,7 @@ func halDecorator(prefix string, response interface{}, role string) (interface{}
 	return hm_resp
 }
 
-func halResourceLinks(ent entity, props map[string]interface{}, sub bool) (map[string]interface{}) {
+func halResourceLinks(ent *entity, props map[string]interface{}, sub bool) (map[string]interface{}) {
 	lnklist := make(map[string]interface{})
 
 	for _, e_lnk := range ent.links {
@@ -110,13 +110,13 @@ func halResourceLinks(ent entity, props map[string]interface{}, sub bool) (map[s
 		}
 
 		lnk := HalLink{e_lnk.href, e_lnk.templated, e_lnk.typ, "", e_lnk.name, "", e_lnk.title, ""}
-		lnk.Href = updatePath(lnk.Href, props)
+		lnk.Href = myDec.UpdatePath(lnk.Href, props)
 		lnklist[e_lnk.rel] = lnk
 	}
 	return lnklist
 }
 
-func halDocumentCuries(ent entity) (map[string]interface{}) {
+func halDocumentCuries(ent *entity) (map[string]interface{}) {
 	lnklist := make(map[string]interface{})
 
 	var curlist	[]HalCurie
@@ -134,7 +134,7 @@ func halDocumentCuries(ent entity) (map[string]interface{}) {
 	return lnklist
 }
 
-func stripEmbedded(in reflect.Value, entities map[string]entity) (map[string]interface{}, map[string]interface{}) {
+func stripEmbedded(in reflect.Value) (map[string]interface{}, map[string]interface{}) {
 	emb := make(map[string]interface{})
 	props := make(map[string]interface{})
 
@@ -144,15 +144,15 @@ func stripEmbedded(in reflect.Value, entities map[string]entity) (map[string]int
 		switch vItem.Kind() {
 			case reflect.Slice, reflect.Array, reflect.Map:
 				item := vItem.Index(0)
-				if _, ok := entities[item.Type().Name()]; ok {
-					resources, _ := getEmbeddedList(vItem, entities)
+				if itm := myDec.GetEntity(item.Type().Name()); itm != nil {
+					resources, _ := getEmbeddedList(vItem)
 					emb[item.Type().Name()] = resources
 				} else {
 					props[typ.Field(i).Name] = vItem.Interface()
 				}
 			default:
-				if _, ok := entities[typ.Field(i).Name]; ok {
-					resource := getEmbedded(false, vItem, entities)
+				if itm := myDec.GetEntity(typ.Field(i).Name); itm != nil {
+					resource := getEmbedded(false, vItem)
 					emb[typ.Field(i).Name] = resource
 				} else {
 					props[typ.Field(i).Name] = vItem.Interface()
@@ -162,7 +162,7 @@ func stripEmbedded(in reflect.Value, entities map[string]entity) (map[string]int
 	return props, emb
 }
 
-func getEmbeddedList(val reflect.Value, entities map[string]entity) ([]interface{}, string) {
+func getEmbeddedList(val reflect.Value) ([]interface{}, string) {
 	var className		string
 
 	embList := make([]interface{}, 0)
@@ -170,7 +170,7 @@ func getEmbeddedList(val reflect.Value, entities map[string]entity) ([]interface
 	for i := 0; i < val.Len(); i++ {
 		vItem := val.Index(i)
 
-		item := getEmbedded(true, vItem, entities)
+		item := getEmbedded(true, vItem)
 
 		embList = append(embList, item)
 
@@ -182,10 +182,10 @@ func getEmbeddedList(val reflect.Value, entities map[string]entity) ([]interface
 	return embList, className
 }
 
-func getEmbedded(embedded bool, in reflect.Value, entities map[string]entity) map[string]interface{} {
+func getEmbedded(embedded bool, in reflect.Value) map[string]interface{} {
 	resp := make(map[string]interface{}, 0)
         typ := reflect.TypeOf(in.Interface())
-	if subent, ok := entities[in.Type().Name()]; ok {
+	if subent := myDec.GetEntity(in.Type().Name()); subent != nil {
                 val := reflect.ValueOf(in.Interface())
                 for i := 0; i < typ.NumField(); i++ {
                         valf := val.Field(i)
@@ -204,7 +204,8 @@ func getEmbedded(embedded bool, in reflect.Value, entities map[string]entity) ma
 }
 
 // creates a new HAL Decorator 
-func newHalDecorator() *Decorator {
-	dec := Decorator{halDecorator}
-	return &dec
+func newHalDecorator() *indivDec {
+	dec := new(indivDec)
+	dec.Decorate = halDecorator
+	return dec
 }

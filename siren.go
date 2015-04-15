@@ -27,11 +27,8 @@
 package hypermedia
 
 import (
-	"strings"
 	"reflect"
-	"regexp"
 	"strconv"
-//	"unicode"
 )
 
 type Siren struct {
@@ -75,31 +72,32 @@ type SirenLink struct {
 	Type		string		`json:"type,omitempty"`
 }
 
+var myDec *Decorator
+
 // This takes the data destined for the http response body and adds hypermedia content
 // to the message prior to marshaling the data and returning it to the client
 // The SirenDecorator loosely follows the siren specification
 // mime type: applcation/vnd.siren+json 
-func sirenDecorator(prefix string, response interface{}, role string) (interface{}) {
+func sirenDecorator(response interface{}, dec *Decorator) (interface{}) {
 	var hm_resp 	Siren
-
-	srvr_prefix = prefix
+	myDec = dec
 
 	v := reflect.ValueOf(response)
 	switch v.Kind() {
 		case reflect.Struct:
 			// Properties - not sub-entity items
 			// Any sub-entities (struct or array), placed in Entities
-			props, ents := stripSubentities(v, entities, role)
+			props, ents := stripSubentities(v)
 			hm_resp.Properties = props
 			hm_resp.Entities = ents
 			hm_resp.Class = reflect.TypeOf(response).Name()
-			hm_resp.Actions = sirenActions(entities[hm_resp.Class], props, role)
-			hm_resp.Links = sirenLinks(entities[hm_resp.Class], props, role)
+			hm_resp.Actions = sirenActions(myDec.GetEntity(hm_resp.Class), props)
+			hm_resp.Links = sirenLinks(myDec.GetEntity(hm_resp.Class), props)
 		case reflect.Slice, reflect.Array, reflect.Map:
 			props := make(map[string]interface{})
-			hm_resp.Entities, hm_resp.Class = getEntityList(v, entities, role)
-			hm_resp.Actions = sirenActions(entities[hm_resp.Class], props, role)
-			hm_resp.Links = sirenLinks(entities[hm_resp.Class], props, role)
+			hm_resp.Entities, hm_resp.Class = getEntityList(v)
+			hm_resp.Actions = sirenActions(myDec.GetEntity(hm_resp.Class), props)
+			hm_resp.Links = sirenLinks(myDec.GetEntity(hm_resp.Class), props)
 		default:
 			hm_resp.Properties = response
 			hm_resp.Class = reflect.TypeOf(response).Name()
@@ -108,33 +106,37 @@ func sirenDecorator(prefix string, response interface{}, role string) (interface
 	return hm_resp
 }
 
-func sirenLinks(ent entity, props map[string]interface{}, role string) []SirenLink {
+func sirenLinks(ent *entity, props map[string]interface{}) []SirenLink {
 	lnklist := make([]SirenLink, 0)
 	
-	for _, e_lnk := range ent.links {
-		if canAccessResource(e_lnk.class, role, "GET") {
-			lnk := SirenLink{"", "", e_lnk.rel, e_lnk.href, ""}
-			lnk.Href = updatePath(lnk.Href, props)
-			lnklist = append(lnklist, lnk)
+	if ent != nil {
+		for _, e_lnk := range ent.links {
+			if myDec.hasAccess(e_lnk.href, "GET") {
+				lnk := SirenLink{"", "", e_lnk.rel, e_lnk.href, ""}
+				lnk.Href = myDec.UpdatePath(lnk.Href, props)
+				lnklist = append(lnklist, lnk)
+			}
 		}
 	}
 	return lnklist
 }
 
-func sirenActions(ent entity, props map[string]interface{}, role string) []SirenAction {
+func sirenActions(ent *entity, props map[string]interface{}) []SirenAction {
 	actlist := make([]SirenAction, 0)
 	
-	for _, e_act := range ent.actions {
-		if canAccessResource(e_act.class, role, e_act.method) {
-			act := SirenAction{e_act.name, e_act.class, e_act.method, e_act.href, "", ""}
-			act.Href = updatePath(act.Href, props)
-			actlist = append(actlist, act)
+	if ent != nil {
+		for _, e_act := range ent.actions {
+			if myDec.hasAccess(e_act.href, e_act.method) {
+				act := SirenAction{e_act.name, e_act.class, e_act.method, e_act.href, "", ""}
+				act.Href = myDec.UpdatePath(act.Href, props)
+				actlist = append(actlist, act)
+			}
 		}
 	}
 	return actlist
 }
 
-func stripSubentities(in reflect.Value, entities map[string]entity, role string) (map[string]interface{}, []SirenEntity) {
+func stripSubentities(in reflect.Value) (map[string]interface{}, []SirenEntity) {
 	ents :=	[]SirenEntity{}
 	out := make(map[string]interface{}, 30)
 
@@ -145,8 +147,8 @@ func stripSubentities(in reflect.Value, entities map[string]entity, role string)
 			case reflect.Slice, reflect.Array, reflect.Map:
 				if vItem.Len() > 0 {
 					item := vItem.Index(0)
-					if _, ok := entities[item.Type().Name()]; ok {
-						tmp, _ := getEntityList(vItem, entities, role)
+					if itm := myDec.GetEntity(item.Type().Name()); itm != nil {
+						tmp, _ := getEntityList(vItem)
 						ents = append(ents, tmp...)
 					} else {
 						out[typ.Field(i).Name] = vItem.Interface()
@@ -155,8 +157,8 @@ func stripSubentities(in reflect.Value, entities map[string]entity, role string)
 					out[typ.Field(i).Name] = vItem.Interface()
 				}
 			default:
-				if _, ok := entities[typ.Field(i).Name]; ok {
-					item := getEntity(false, vItem, entities, role)
+				if itm := myDec.GetEntity(typ.Field(i).Name); itm != nil {
+					item := getEntity(false, vItem, "class")
 					ents = append(ents, item)
 				} else {
 					out[typ.Field(i).Name] = vItem.Interface()
@@ -167,14 +169,14 @@ func stripSubentities(in reflect.Value, entities map[string]entity, role string)
 	return out, ents
 }
 
-func getEntityList(val reflect.Value, entities map[string]entity, role string) ([]SirenEntity, string) {
+func getEntityList(val reflect.Value) ([]SirenEntity, string) {
 	entList := []SirenEntity{}
 	var className string
 
 	for i := 0; i < val.Len(); i++ {
 		vItem := val.Index(i)
 
-		item := getEntity(true, vItem, entities, role)
+		item := getEntity(true, vItem, "list")
 		item.Class = vItem.Type().Name() + " list-item"
 
 		entList = append(entList, item)
@@ -187,14 +189,14 @@ func getEntityList(val reflect.Value, entities map[string]entity, role string) (
 	return entList, className
 }
 
-func getEntity(sub bool, vItem reflect.Value, entities map[string]entity, role string) SirenEntity {
+func getEntity(sub bool, vItem reflect.Value, colType string) SirenEntity {
 	var item	SirenEntity
 
 	item.Class = vItem.Type().Name()
 	item.Rel = vItem.Type().Name()
 	item.Properties = vItem.Interface()
 
-	if subent, ok := entities[vItem.Type().Name()]; ok {
+	if subent := myDec.GetEntity(vItem.Type().Name()); subent != nil {
 		typ := reflect.TypeOf(item.Properties)
 		val := reflect.ValueOf(item.Properties)
 		props := make(map[string]interface{}, typ.NumField())
@@ -204,60 +206,48 @@ func getEntity(sub bool, vItem reflect.Value, entities map[string]entity, role s
 		}
 
 		for j:= 0; j < len(subent.links); j++ {
-	//		if sub && strings.IndexFunc(subent.links[j].rel[:1], unicode.IsUpper) == 0 {
-	//			continue
-	//		}
+			process := false
+			if (subent.links[j].in == "both" || subent.links[j].in == "list") && colType == "list" {
+				process = true
+			}
 
-			if canAccessResource(subent.links[j].class, role, "GET") {
-				lnk := SirenLink{"", "", subent.links[j].rel, subent.links[j].href, ""}
+			if (subent.links[j].in == "both" || subent.links[j].in == "class") && colType == "class" {
+				process = true
+			}
 
-				lnk.Href = updatePath(lnk.Href, props)
+			if process {
+				if myDec.hasAccess(subent.links[j].href, "GET") {
+					lnk := SirenLink{"", "", subent.links[j].rel, subent.links[j].href, ""}
 
-				item.Links = append(item.Links, lnk)
+					lnk.Href = myDec.UpdatePath(lnk.Href, props)
+
+					item.Links = append(item.Links, lnk)
+				}
 			}
 		}
 
 		for j:= 0; j < len(subent.actions); j++ {
-			if canAccessResource(subent.actions[j].class, role, subent.actions[j].method) {
-				act := SirenAction{subent.actions[j].name, subent.actions[j].class, subent.actions[j].method, subent.actions[j].href, "", ""}
+			process := false
+			if (subent.actions[j].in == "both" || subent.actions[j].in == "list") && colType == "list" {
+				process = true
+			}
 
-				act.Href = updatePath(act.Href, props)
+			if (subent.actions[j].in == "both" || subent.actions[j].in == "class") && colType == "class" {
+				process = true
+			}
 
-				item.Actions = append(item.Actions, act)
+			if process {
+				if myDec.hasAccess(subent.actions[j].href, subent.actions[j].method) {
+					act := SirenAction{subent.actions[j].name, subent.actions[j].class, subent.actions[j].method, subent.actions[j].href, "", ""}
+
+					act.Href = myDec.UpdatePath(act.Href, props)
+
+					item.Actions = append(item.Actions, act)
+				}
 			}
 		}
 	}
 	return item
-}
-
-func updatePath(path string, props map[string]interface{}) string {
-
-	reg := regexp.MustCompile("{[^}]+}")
-	parts := reg.FindAllString(path, -1)
-
-	for _, str1 := range parts {
-		if strings.HasPrefix(str1, "{") && strings.HasSuffix(str1, "}") {
-			
-			str2 := str1[1:len(str1) - 1]
-			if pos := strings.IndexAny(str2, "+-"); pos > -1  {
-				if item, found := props[str2[:pos]]; found {
-					value := reflect.ValueOf(item).Int()
-					val2, _ := strconv.Atoi(str2[pos+1:])
-					if strings.Contains(str2, "+")  {
-						value = value + int64(val2)
-					} else {
-						value = value - int64(val2)
-					}
-					path = strings.Replace(path, str1, strconv.FormatInt(value, 10), 1)
-				}
-			} else if item, found := props[str2]; found {
-				path = strings.Replace(path, str1, getValueString(item), 1)
-			}
-		}
-	}
-	path = srvr_prefix + path
-
-	return path
 }
 
 func getValueString(item interface{}) string {
@@ -281,7 +271,8 @@ func getValueString(item interface{}) string {
 }
 
 // creates a new Siren Decorator 
-func newSirenDecorator() *Decorator {
-	dec := Decorator{sirenDecorator}
-	return &dec
+func newSirenDecorator() *indivDec {
+	dec := new(indivDec)
+	dec.Decorate = sirenDecorator
+	return dec
 }

@@ -27,11 +27,42 @@
 package hypermedia
 
 import (
+	"fmt"
 	"reflect"
+	"regexp"
 	"strings"
 )
 
-var decorators map[string]*Decorator
+type HypermediaDef struct {
+	Resources       map[string]ResourceDef  `json:"resources"`
+	Classes         map[string]ClassDef     `json:"classes"`
+}
+
+type ResourceDef struct {
+	Href            string                  `json:"href"`
+	Version         string                  `json:"version"`
+}
+
+type ClassDef struct {
+	ResourceName    string                  `json:"resource"`
+	Actions         []ActionDef             `json:"actions"`
+	Links           []LinkDef               `json:"links"`
+}
+
+type ActionDef struct {
+	Name            string                  `json:"name"`
+	Class           string                  `json:"class"`
+	Method          string                  `json:"method"`
+	Href            string                  `json:"href"`
+	In		string			`json:"in"`
+}
+
+type LinkDef struct {
+	Name            string                  `json:"name"`
+	Class           string                  `json:"class"`
+	Href            string                  `json:"href"`
+	In		string			`json:"in"`
+}
 
 // siren - entity, hal - resource and embedded
 type entity struct {
@@ -53,6 +84,7 @@ type link struct {
 	typ		string
 	templated	bool
 	name		string
+	in		string
 }
 
 // siren - actions (leaving fields off for now)
@@ -63,6 +95,7 @@ type action struct {
 	class		string
 	title		string
 	typ		string
+	in		string
 }
 
 // hal - curie type, intended for documentation and URI prefix
@@ -81,59 +114,106 @@ type Curie bool			// hal
 //type Template bool		// collection+json
 //type Data bool			// collection+json
 
-var entityInitialized	bool
-var entities 		map[string]entity
-var srvr_prefix		string
-var access		map[string]string
-var security_enabled	bool
+type Decorator struct {
+	decorators		map[string]*indivDec
+	entities 		map[string]entity
+	scopes			map[string]bool
+	paths			map[string][]string
+	srvr_prefix		string
+	security_enabled	bool
+}
 
 //Signiture of functions to be used as Decorators
-type Decorator struct {
-	Decorate func(string, interface{}, string) (interface{})
+type indivDec struct {
+	Decorate func(interface{}, *Decorator) (interface{})
 }
 
-func NewHypermediaDecorator() {
-	access = make(map[string]string)
-	security_enabled = false
-	registerHypermedia("application/vnd.siren+json", newSirenDecorator())
-	registerHypermedia("application/hal+json", newHalDecorator())
+func NewHypermediaDecorator() Decorator {
+	dec := new(Decorator)
+	dec.decorators = make(map[string]*indivDec, 0)
+
+	dec.security_enabled = false
+	dec.registerHypermedia("application/vnd.siren+json", newSirenDecorator())
+	dec.registerHypermedia("application/hal+json", newHalDecorator())
+	dec.entities = make(map[string]entity)
+	dec.paths = make(map[string][]string)
+
+	return *dec
 }
 
-func Decorate(mime string, prefix string, response interface{}, role string) (interface{}) {
-	dec := getHypermedia(mime)
+func (this Decorator) Decorate(mime string, prefix string, response interface{}, scopes []string) (interface{}) {
+	dec := this.getHypermedia(mime)
 	if dec == nil {
 		return response
 	} else {
-		return dec.Decorate(prefix, response, role)
+		this.srvr_prefix = prefix
+		this.scopes = make(map[string]bool)
+		for i := range scopes {
+			strScope := scopes[i]
+			hasContext := false
+			if pos := strings.Index(scopes[i], "["); pos > -1 {
+				strScope = strScope[:pos]
+				hasContext = true
+			}
+			this.scopes[strScope] = hasContext
+		}
+		return dec.Decorate(response, &this)
 	}
 }
 
 //Registers an Hypermedia Decorator for the specified mime type
-func registerHypermedia(mime string, dec *Decorator) {
-	if decorators == nil {
-		decorators = make(map[string]*Decorator, 0)
-	}
-	if _, found := decorators[mime]; !found {
-		decorators[mime] = dec
+func (this Decorator) registerHypermedia(mime string, dec *indivDec) {
+	if _, found := this.decorators[mime]; !found {
+		this.decorators[mime] = dec
 	}
 }
 
 //Returns the registred decorator for the specified mime type
-func getHypermedia(mime string) (dec *Decorator) {
-	if decorators == nil {
-		decorators = make(map[string]*Decorator, 0)
-	}
-	dec, _ = decorators[mime]
+func (this Decorator) getHypermedia(mime string) (dec *indivDec) {
+	dec, _ = this.decorators[mime]
 	return
 }
 
-func RegisterEntity(i_ent interface{}) {
+func (this Decorator) RegisterDefinition(hmDef HypermediaDef) {
+	for className, classData := range hmDef.Classes {
+		var ent		entity
 
-	if !entityInitialized {
-		entities = make(map[string]entity)
-		entityInitialized = true
+		ent.links = make(map[int]link)
+		ent.actions = make(map[int]action)
+		ent.curies = make(map[int]curie)
+
+		ent.class = className
+		ent.href = hmDef.Resources[classData.ResourceName].Href
+
+		for i := range classData.Actions {
+			var newAction	action
+
+			newAction.name = classData.Actions[i].Name
+			newAction.method = classData.Actions[i].Method
+			newAction.href = hmDef.Resources[classData.Actions[i].Class].Href + classData.Actions[i].Href
+			newAction.class = classData.Actions[i].Class
+			newAction.in = classData.Actions[i].In
+
+			ent.actions[i] = newAction
+		}
+
+		for i := range classData.Links {
+			var newLink	link
+
+			newLink.name = classData.Links[i].Name
+			newLink.rel = classData.Links[i].Name
+			newLink.href = hmDef.Resources[classData.Links[i].Class].Href + classData.Links[i].Href
+			newLink.class = classData.Links[i].Class
+			newLink.in = classData.Links[i].In
+
+			ent.links[i] = newLink
+		}
+
+		this.entities[className] = ent
 	}
-
+}
+ 
+func (this Decorator) RegisterEntity(i_ent interface{}) {
 	t := reflect.TypeOf(i_ent)
 
 	if t.Kind() == reflect.Ptr {
@@ -170,13 +250,13 @@ func RegisterEntity(i_ent interface{}) {
 					curiecnt++
 				}
 			}
-			entities[ent.class] = ent	
+			this.entities[ent.class] = ent	
 		}
 	}
 }
 
-func UnregisterEntity(classname string) {
-	delete(entities, classname)
+func (this Decorator) UnregisterEntity(classname string) {
+	delete(this.entities, classname)
 }
 
 func prepEntityData(tags reflect.StructTag) entity {
@@ -281,31 +361,61 @@ func prepCurieData(name string, tags reflect.StructTag) curie {
 	return *cur
 }
 
-func EnableSecurity() {
-	security_enabled = true
+func (this Decorator) EnableSecurity() {
+	this.security_enabled = true
 }
 
-func AddAccessRights(resource string, role string, rights string) {
-	access[resource + role] = rights
+func (this Decorator) UpdatePath(path string, props map[string]interface{}) string {
+
+	reg := regexp.MustCompile("{[^}]+}")
+	parts := reg.FindAllString(path, -1)
+
+	for _, str1 := range parts {
+		if strings.HasPrefix(str1, "{") && strings.HasSuffix(str1, "}") {
+			
+			str2 := str1[1:len(str1) - 1]
+			if item, found := props[str2]; found {
+				path = strings.Replace(path, str1, getValueString(item), 1)
+			}
+		}
+	}
+	path = this.srvr_prefix + "/" + path
+
+	return path
 }
 
-func canAccessResource(resource string, role string, method string) bool {
-	if !security_enabled {
+func (this Decorator) GetEntity(entName string) *entity {
+	ent, found := this.entities[entName]
+	if found {
+		return &ent
+	} else {
+		return nil
+	}
+}
+
+func (this Decorator) AddAccess(path string, method string, scope []string) {
+	methPath := method + ":" + path
+	this.paths[methPath] = make([]string, 0)
+	this.paths[methPath] = append(this.paths[methPath], scope...)
+}
+
+func (this Decorator) hasAccess(path string, method string) bool {
+	fmt.Println("check access", path, method)
+	methPath := method + ":" + path
+	access, found := this.paths[methPath]
+	if found {
+		for i := range access {
+			if _, hasScope := this.scopes[access[i]]; hasScope {
+				fmt.Println("  scope found")
+				return true
+			} else if access[i] == "<valid>" {
+				return true
+			}
+		}
+	} else {
+		fmt.Println("  Path not found")
 		return true
 	}
-
-	chk := "other"
-	switch method {
-		case "GET": chk = "read"
-		case "POST": chk = "create"
-		case "PUT": chk = "update"
-		case "DELETE": chk = "delete"
-	}
-
-	roleAccess, found := access[resource + role]
-	if found {
-		return strings.Contains(roleAccess, chk)
-	}
-
+	fmt.Println("  Scope not found")
 	return false
 }
